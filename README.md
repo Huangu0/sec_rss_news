@@ -1,19 +1,42 @@
 # sec_rss_news
 
-信息安全资讯RSS订阅整理Skill
+信息安全资讯 RSS 订阅整理 Skill — 遵循 [agentskills.io](https://agentskills.io) 规范打包。
 
-通过RSS源获取安全资讯，完成资讯的过滤去重，并整理输出热点资讯总结（Markdown格式），支持每日和每周两种模式。
+定期抓取配置的 RSS 源，按标题去重并产出按热度排序的结构化热点文章列表，支持 Markdown 和 JSON 两种输出格式。
+
+---
+
+## Skill 规范（agentskills.io）
+
+本项目遵循 [agentskills.io specification](https://agentskills.io/specification) 打包：
+
+| 文件 / 目录 | 说明 |
+|---|---|
+| **`SKILL.md`** | Skill 清单（YAML frontmatter + Markdown 使用说明） |
+| `scripts/` | 可执行脚本 |
+| `references/` | 扩展文档（配置参考、输出 Schema） |
+| `assets/` | 资源文件（预留） |
+
+Skill 清单 `SKILL.md` 包含：
+- `name: sec-rss-news`（唯一标识，小写，连字符分隔）
+- `description`（技能用途及使用时机）
+- `license`, `compatibility`, `metadata`（可选）
+- Markdown 正文：输入/输出、调用方式、配置说明、Pipeline 图
 
 ---
 
 ## 功能特性
 
-- **多源聚合**：从 [SecurityRSS-Lite](https://github.com/arch3rPro/SecurityRSS) OPML 文件中加载 140+ 个安全资讯RSS订阅源
-- **过滤去重**：URL精确去重 + 标题相似度模糊去重（可配置阈值）
-- **热点分析**：基于 jieba 中文分词的关键词频率统计，自动聚合热点话题
-- **Markdown输出**：结构清晰的日报/周报 Markdown 文件
-- **每日/每周**：支持 `daily`（近24小时）和 `weekly`（近7天）两种报告模式
-- **自动化**：内置 GitHub Actions 工作流，每日/每周自动生成并提交报告
+- **多源聚合**：从 OPML URL 或静态列表加载 RSS 源，并发抓取
+- **认证支持**：每个源可独立配置 Basic 认证或 API Key 认证
+- **过滤去重**：URL 精确去重 + 标题相似度模糊去重（SequenceMatcher，可配置阈值）
+- **跨周期持久去重**：基于 SQLite 存储已见文章标题 SHA-256 指纹，防止重复推送
+- **热度打分排序**：`score = time_decay × source_weight × keyword_multiplier`
+  - `time_decay`：指数衰减（越新越高）
+  - `source_weight`：可按源名配置权重
+  - `keyword_multiplier`：标题命中关键词时 ×2
+- **Markdown / JSON 输出**：结构清晰的日报/周报，可直接嵌入 Agent 工作流
+- **YAML/JSON 配置**：所有参数集中在 `config/default.yaml`，支持自定义覆盖
 
 ---
 
@@ -21,17 +44,27 @@
 
 ```
 sec_rss_news/
-├── workflow.yml                    # 流程定义（Skill Pipeline）
-├── requirements.txt                # Python依赖
+├── SKILL.md                        # agentskills.io Skill 清单（必需）
+├── workflow.yml                    # Skill Pipeline 定义
+├── requirements.txt                # Python 依赖
+├── config/
+│   └── default.yaml               # 默认配置（feeds、scoring、persistence 等）
 ├── scripts/
-│   ├── main.py                     # 主入口（CLI）
-│   ├── opml_fetcher.py             # 解析OPML获取RSS订阅源列表
-│   ├── rss_fetcher.py              # 并发抓取RSS资讯
-│   ├── deduplicator.py             # 去重过滤
-│   ├── summarizer.py               # 热点关键词分析
-│   └── formatter.py                # Markdown报告生成
+│   ├── skill_runner.py             # agentskill.io 入口（run_skill）
+│   ├── main.py                     # CLI 入口（保存 Markdown 到 output/）
+│   ├── config_loader.py            # YAML/JSON 配置加载与深度合并
+│   ├── opml_fetcher.py             # OPML 解析（支持格式降级）
+│   ├── rss_fetcher.py              # 并发 RSS 抓取（Basic/API Key 认证）
+│   ├── deduplicator.py             # URL 精确 + 标题模糊去重
+│   ├── persistence.py              # SQLite 跨周期指纹持久化
+│   ├── scorer.py                   # 热度打分与排序
+│   ├── summarizer.py               # jieba 关键词分析与热点聚合
+│   └── formatter.py                # Markdown 报告生成
+├── references/
+│   ├── configuration.md            # 配置项完整说明
+│   └── output-schema.md            # 输出字段说明
 ├── tests/
-│   └── test_skill.py               # 单元测试
+│   └── test_skill.py               # 单元测试（41 个）
 ├── output/
 │   ├── daily/                      # 每日报告（YYYY-MM-DD.md）
 │   └── weekly/                     # 每周报告（YYYY-MM-DD.md）
@@ -41,80 +74,113 @@ sec_rss_news/
 
 ---
 
-## Skill 流程定义
-
-```
-OPML解析 → RSS抓取（并发） → 去重过滤 → 热点分析 → Markdown输出
-```
-
-详见 [`workflow.yml`](./workflow.yml)。
-
----
-
 ## 快速开始
 
-### 安装依赖
+### 1. 安装依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 生成每日简报
+### 2. 运行 Skill（agentskill.io 入口）
+
+```python
+from scripts.skill_runner import run_skill
+
+result = run_skill({
+    "mode": "daily",          # "daily" | "weekly"
+    "output_format": "json",  # "json" | "markdown"
+    "max_hotspots": 10
+})
+# result["hotspots"]  — 按热度排序的热点列表（含 score 字段）
+# result["articles"]  — 去重后全量资讯
+# result["metadata"]  — 统计元数据
+```
+
+### 3. 命令行运行
 
 ```bash
-python scripts/main.py --mode daily
+# JSON 输出（标准输出）
+python scripts/skill_runner.py --mode daily --format json
+
+# Markdown 输出（标准输出）
+python scripts/skill_runner.py --mode daily --format markdown
+
+# 使用自定义配置
+python scripts/skill_runner.py --config config/default.yaml --mode weekly
+
+# 生成并保存 Markdown 报告到 output/ 目录
+python scripts/main.py --mode daily --config config/default.yaml
 ```
 
-### 生成每周简报
+---
 
-```bash
-python scripts/main.py --mode weekly
+## 配置
+
+所有配置位于 `config/default.yaml`，通过 `--config` 参数或 `config_path` 输入覆盖。
+
+关键配置示例：
+
+```yaml
+feeds:
+  opml_url: "https://..."       # OPML 订阅源
+  sources:
+    - title: 内部情报
+      url: https://internal.example.com/rss
+      weight: 2.0
+      auth:
+        type: api_key
+        header: X-API-Key
+        key: your-key
+
+scoring:
+  time_decay_hours: 24          # 衰减半衰期（小时）
+  keyword_boost: [CVE, 漏洞, RCE]
+
+persistence:
+  enabled: true                 # 开启跨周期去重
+  path: data/seen_articles.db
+  retention_days: 30
 ```
 
-### 查看报告
-
-报告默认保存至 `output/daily/YYYY-MM-DD.md` 或 `output/weekly/YYYY-MM-DD.md`。
-
-### 更多选项
-
-```
-usage: main.py [-h] [--mode {daily,weekly}] [--output-dir OUTPUT_DIR]
-               [--opml-url OPML_URL] [--print]
-
-选项:
-  --mode {daily,weekly}   输出模式：daily（近24h）或 weekly（近7天），默认 daily
-  --output-dir OUTPUT_DIR Markdown报告输出目录，默认 output/
-  --opml-url OPML_URL     OPML订阅源文件URL
-  --print                 同时将报告打印到标准输出
-```
+详见 [`references/configuration.md`](./references/configuration.md)。
 
 ---
 
 ## 输出示例
 
+```json
+{
+  "hotspots": [
+    { "keyword": "CVE漏洞", "score": 4.22, "count": 4, "articles": [...] }
+  ],
+  "articles": [...],
+  "metadata": { "total_articles": 98, "unique_articles": 67, "hotspot_count": 8, ... }
+}
+```
+
+Markdown 模式输出示例：
+
 ```markdown
-# 🔐 安全资讯日报 · 2024-01-15
+# 🔐 安全资讯日报 · 2026-04-13
 
-> 📅 数据来源：SecurityRSS-Lite
 > 统计范围：近 24 小时
-> 共收录 **42** 条资讯，发现 **8** 个热点话题
-
----
+> 共收录 **67** 条资讯，发现 **8** 个热点话题
 
 ## 📊 热点话题
 
-### 🔥 热点 1：CVE漏洞（5 条相关资讯）
-
-- [CVE-2024-XXXX 高危漏洞分析](https://example.com/...) — `FreeBuf` · 2024-01-15 08:00
-- ...
+### 🔥 热点 1：CVE漏洞（4 条相关资讯）
+- [CVE-2026-0001 RCE漏洞预警](https://...) — `FreeBuf` · 2026-04-13 08:00
+...
+```
 
 ---
 
-## 📰 全部资讯
+## 运行测试
 
-### 安全资讯
-- [标题](URL) — `来源` · 时间
-...
+```bash
+pip install pytest
+python -m pytest tests/ -v
 ```
 
 ---
@@ -128,21 +194,10 @@ usage: main.py [-h] [--mode {daily,weekly}] [--output-dir OUTPUT_DIR]
 | 每日 | daily | `0 2 * * *`（UTC 02:00） |
 | 每周一 | weekly | `0 2 * * 1`（UTC 02:00 周一） |
 
-也可在 Actions 页面手动触发并选择模式。
-
 ---
 
-## 运行测试
+## RSS 源
 
-```bash
-pip install pytest
-python -m pytest tests/ -v
-```
-
----
-
-## RSS源
-
-本项目使用 [arch3rPro/SecurityRSS](https://github.com/arch3rPro/SecurityRSS) 提供的
-`SecurityRSS-Lite.opml`，包含安全资讯、博客论坛、官网文章、国外博客、漏洞库、漏洞预警、
-实验室团队、武器工具库、CTF靶场等 9 个分类共 140+ 个订阅源。
+默认使用 [arch3rPro/SecurityRSS](https://github.com/arch3rPro/SecurityRSS) 提供的
+`SecurityRSS-Lite.opml`，包含安全资讯、博客论坛、官网文章、国外博客、漏洞库等 9 个分类 140+ 个订阅源。
+也可通过 `config/default.yaml` 的 `feeds.sources` 添加自定义源。

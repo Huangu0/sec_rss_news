@@ -1,7 +1,9 @@
 name: sec_rss_news
-version: "1.0"
+version: "1.1"
 description: >
-  安全资讯RSS订阅聚合Skill：通过RSS源获取安全资讯，完成资讯的过滤去重，并整理输出热点资讯总结。
+  安全资讯RSS订阅聚合Skill：通过RSS源获取安全资讯，完成资讯的过滤去重，
+  按热度打分（时间衰减 × 来源权重 × 关键词加权）排序，整理输出热点资讯总结。
+  遵循 agentskill.io 规范，详见 skill.json。
 
 steps:
   - id: fetch_opml
@@ -17,7 +19,9 @@ steps:
     module: scripts.rss_fetcher
     function: fetch_all_articles
     depends_on: [fetch_opml]
-    description: 并发从各RSS源拉取最新资讯，按时间范围过滤（每日/每周）
+    description: >
+      并发从各RSS源拉取最新资讯，按时间范围过滤（每日/每周）。
+      支持 Basic 认证和 API Key 认证（通过配置文件 feeds.sources[].auth 设置）。
 
   - id: dedup
     name: 去重过滤
@@ -30,29 +34,52 @@ steps:
       1. URL完全匹配去重；
       2. 标题相似度（≥0.8）模糊去重，保留最新一篇。
 
+  - id: persist_dedup
+    name: 跨周期持久去重
+    type: python
+    module: scripts.persistence
+    function: ArticlePersistence.filter_new
+    depends_on: [dedup]
+    description: >
+      基于 SQLite 的跨周期去重：将已处理文章的标题 SHA-256 指纹持久化，
+      过滤历史周期已推送的文章，防止重复推送。
+
   - id: summarize
     name: 热点分析
     type: python
     module: scripts.summarizer
     function: analyze_hotspots
-    depends_on: [dedup]
+    depends_on: [persist_dedup]
     description: >
       提取资讯标题关键词（jieba分词），统计词频，将资讯聚合为热点话题，
       按关联资讯数量降序排列，输出Top热点列表。
+
+  - id: score
+    name: 热度打分与排序
+    type: python
+    module: scripts.scorer
+    function: score_and_rank_hotspots
+    depends_on: [summarize]
+    description: >
+      对热点列表按热度分重新排序：
+      score = time_decay × source_weight × keyword_multiplier
+      其中 time_decay = exp(-age_hours / decay_hours)。
 
   - id: output
     name: Markdown输出
     type: python
     module: scripts.formatter
     function: format_report
-    depends_on: [summarize]
+    depends_on: [score]
     description: >
       将热点资讯总结格式化为Markdown报告，包含：
       - 报告头（日期、数据统计）
-      - 热点话题区块（按热度排序）
+      - 热点话题区块（按热度分降序）
       - 全量资讯列表（按分类分组）
 
 config:
+  skill_manifest: "SKILL.md"
+  config_file: "config/default.yaml"
   opml_url: "https://raw.githubusercontent.com/arch3rPro/SecurityRSS/main/SecurityRSS-Lite.opml"
   output_dir: "output"
   modes:
@@ -70,7 +97,14 @@ config:
     max_items_per_source: 20
   dedup:
     title_similarity_threshold: 0.8
-  hotspot:
-    min_keyword_length: 2
+  scoring:
+    time_decay_hours: 24
+    source_weight_enabled: true
+    keyword_boost: [CVE, 漏洞, 勒索, 攻击, 0day, RCE, 供应链, APT, 数据泄露]
     top_keywords: 20
     min_articles_per_hotspot: 2
+  persistence:
+    enabled: false
+    type: sqlite
+    path: data/seen_articles.db
+    retention_days: 30

@@ -43,8 +43,41 @@ def _parse_date(entry) -> Optional[datetime]:
     return None
 
 
+def _build_request_kwargs(feed_info: Dict) -> Dict:
+    """Build keyword arguments for ``requests.get`` based on feed auth config.
+
+    Supported auth types (configured under the ``auth`` key of a feed dict):
+      * ``basic``   — HTTP Basic Authentication (username + password)
+      * ``api_key`` — Custom header-based API key (header + key)
+
+    Args:
+        feed_info: Feed dict that may contain an ``auth`` sub-dict.
+
+    Returns:
+        Dict of extra kwargs to pass to ``requests.get``.
+    """
+    kwargs: Dict = {"headers": {"User-Agent": "sec-rss-news/1.0"}}
+    auth_cfg = feed_info.get("auth")
+    if not auth_cfg:
+        return kwargs
+
+    auth_type = str(auth_cfg.get("type", "")).lower()
+    if auth_type == "basic":
+        username = auth_cfg.get("username", "")
+        password = auth_cfg.get("password", "")
+        if username or password:
+            kwargs["auth"] = (username, password)
+    elif auth_type == "api_key":
+        header = auth_cfg.get("header", "Authorization")
+        key = auth_cfg.get("key", "")
+        if key:
+            kwargs["headers"][header] = key
+
+    return kwargs
+
+
 def _fetch_single_feed(
-    feed_info: Dict[str, str],
+    feed_info: Dict,
     window_hours: int,
     max_items: int,
     timeout: int,
@@ -58,7 +91,8 @@ def _fetch_single_feed(
     try:
         # feedparser can handle the request itself but doesn't support timeout;
         # download the raw bytes with requests first.
-        resp = requests.get(url, timeout=timeout, headers={"User-Agent": "sec-rss-news/1.0"})
+        request_kwargs = _build_request_kwargs(feed_info)
+        resp = requests.get(url, timeout=timeout, **request_kwargs)
         resp.raise_for_status()
         parsed = feedparser.parse(resp.content)
     except Exception as exc:

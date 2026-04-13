@@ -28,3 +28,6 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Skill runtime data (SQLite persistence db)
+data/
