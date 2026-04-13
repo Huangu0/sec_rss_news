@@ -1,0 +1,76 @@
+name: sec_rss_news
+version: "1.0"
+description: >
+  安全资讯RSS订阅聚合Skill：通过RSS源获取安全资讯，完成资讯的过滤去重，并整理输出热点资讯总结。
+
+steps:
+  - id: fetch_opml
+    name: 获取RSS订阅源列表
+    type: python
+    module: scripts.opml_fetcher
+    function: fetch_feeds_from_opml
+    description: 从OPML配置文件解析RSS订阅源列表（标题、URL、分类）
+
+  - id: fetch_news
+    name: 获取资讯
+    type: python
+    module: scripts.rss_fetcher
+    function: fetch_all_articles
+    depends_on: [fetch_opml]
+    description: 并发从各RSS源拉取最新资讯，按时间范围过滤（每日/每周）
+
+  - id: dedup
+    name: 去重过滤
+    type: python
+    module: scripts.deduplicator
+    function: deduplicate_articles
+    depends_on: [fetch_news]
+    description: >
+      对获取到的资讯进行去重：
+      1. URL完全匹配去重；
+      2. 标题相似度（≥0.8）模糊去重，保留最新一篇。
+
+  - id: summarize
+    name: 热点分析
+    type: python
+    module: scripts.summarizer
+    function: analyze_hotspots
+    depends_on: [dedup]
+    description: >
+      提取资讯标题关键词（jieba分词），统计词频，将资讯聚合为热点话题，
+      按关联资讯数量降序排列，输出Top热点列表。
+
+  - id: output
+    name: Markdown输出
+    type: python
+    module: scripts.formatter
+    function: format_report
+    depends_on: [summarize]
+    description: >
+      将热点资讯总结格式化为Markdown报告，包含：
+      - 报告头（日期、数据统计）
+      - 热点话题区块（按热度排序）
+      - 全量资讯列表（按分类分组）
+
+config:
+  opml_url: "https://raw.githubusercontent.com/arch3rPro/SecurityRSS/main/SecurityRSS-Lite.opml"
+  output_dir: "output"
+  modes:
+    daily:
+      window_hours: 24
+      max_hotspots: 10
+      description: 每日资讯简报
+    weekly:
+      window_hours: 168
+      max_hotspots: 15
+      description: 每周资讯简报
+  fetch:
+    timeout_seconds: 15
+    max_workers: 10
+    max_items_per_source: 20
+  dedup:
+    title_similarity_threshold: 0.8
+  hotspot:
+    min_keyword_length: 2
+    top_keywords: 20
+    min_articles_per_hotspot: 2

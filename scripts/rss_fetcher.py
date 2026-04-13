@@ -1,0 +1,150 @@
+"""
+rss_fetcher.py
+并发抓取多个RSS订阅源的文章，按时间窗口过滤并统一返回。
+"""
+
+from __future__ import annotations
+
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
+
+import feedparser
+import requests
+from dateutil import parser as dateutil_parser
+from datetime import timedelta
+
+DEFAULT_TIMEOUT = 15
+DEFAULT_MAX_WORKERS = 10
+DEFAULT_MAX_ITEMS = 20
+
+
+def _parse_date(entry) -> Optional[datetime]:
+    """Try to extract a timezone-aware datetime from a feedparser entry."""
+    for attr in ("published_parsed", "updated_parsed", "created_parsed"):
+        t = getattr(entry, attr, None)
+        if t:
+            try:
+                return datetime(*t[:6], tzinfo=timezone.utc)
+            except Exception:
+                pass
+    # Fallback: try parsing raw string fields
+    for attr in ("published", "updated", "created"):
+        raw = getattr(entry, attr, None)
+        if raw:
+            try:
+                dt = dateutil_parser.parse(raw)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except Exception:
+                pass
+    return None
+
+
+def _fetch_single_feed(
+    feed_info: Dict[str, str],
+    window_hours: int,
+    max_items: int,
+    timeout: int,
+) -> List[Dict]:
+    """Fetch one RSS feed and return a list of article dicts."""
+    url = feed_info["url"]
+    source_title = feed_info.get("title", url)
+    category = feed_info.get("category", "未分类")
+    articles: List[Dict] = []
+
+    try:
+        # feedparser can handle the request itself but doesn't support timeout;
+        # download the raw bytes with requests first.
+        resp = requests.get(url, timeout=timeout, headers={"User-Agent": "sec-rss-news/1.0"})
+        resp.raise_for_status()
+        parsed = feedparser.parse(resp.content)
+    except Exception as exc:
+        print(f"[RSS] ✗ {source_title} — {exc}")
+        return articles
+
+    now = datetime.now(tz=timezone.utc)
+    cutoff = None
+    if window_hours > 0:
+        cutoff = now.replace(microsecond=0) - timedelta(hours=window_hours)
+
+    count = 0
+    for entry in parsed.entries:
+        if count >= max_items:
+            break
+
+        pub_date = _parse_date(entry)
+
+        # Apply time window filter only when we have a valid date
+        if cutoff and pub_date and pub_date < cutoff:
+            continue
+
+        link = getattr(entry, "link", "") or ""
+        title = getattr(entry, "title", "").strip()
+        summary = getattr(entry, "summary", "") or getattr(entry, "description", "") or ""
+
+        if not title:
+            continue
+
+        articles.append(
+            {
+                "title": title,
+                "link": link,
+                "summary": summary[:500],
+                "published": pub_date,
+                "source": source_title,
+                "category": category,
+            }
+        )
+        count += 1
+
+    print(f"[RSS] ✓ {source_title} — {len(articles)} 条")
+    return articles
+
+
+def fetch_all_articles(
+    feeds: List[Dict[str, str]],
+    window_hours: int = 24,
+    max_items: int = DEFAULT_MAX_ITEMS,
+    timeout: int = DEFAULT_TIMEOUT,
+    max_workers: int = DEFAULT_MAX_WORKERS,
+) -> List[Dict]:
+    """Fetch articles from all *feeds* concurrently.
+
+    Args:
+        feeds: List of feed dicts from opml_fetcher.
+        window_hours: Only include articles published within this many hours.
+                      Use 0 to disable time filtering.
+        max_items: Maximum articles to collect per feed.
+        timeout: HTTP request timeout in seconds.
+        max_workers: Thread pool size.
+
+    Returns:
+        Combined list of article dicts, newest first.
+    """
+    all_articles: List[Dict] = []
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                _fetch_single_feed, feed, window_hours, max_items, timeout
+            ): feed
+            for feed in feeds
+        }
+        for future in as_completed(futures):
+            try:
+                all_articles.extend(future.result())
+            except Exception as exc:
+                feed = futures[future]
+                print(f"[RSS] 线程异常 {feed.get('title', '')}: {exc}")
+
+    # Sort newest first; entries without a date go to the end
+    all_articles.sort(
+        key=lambda a: a["published"] or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+
+    print(f"[RSS] 共获取 {len(all_articles)} 条资讯（时间窗口 {window_hours}h）")
+    return all_articles
