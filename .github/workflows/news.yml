@@ -1,0 +1,60 @@
+name: Security RSS News
+
+on:
+  schedule:
+    # Daily report — runs at 02:00 UTC every day
+    - cron: "0 2 * * *"
+    # Weekly report — runs at 02:00 UTC every Monday
+    - cron: "0 2 * * 1"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Output mode"
+        required: true
+        default: "daily"
+        type: choice
+        options:
+          - daily
+          - weekly
+
+jobs:
+  generate-report:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Determine output mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ github.event.inputs.mode }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 2 * * 1" ]; then
+            echo "mode=weekly" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=daily" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate RSS news report
+        run: python scripts/main.py --mode ${{ steps.mode.outputs.mode }}
+
+      - name: Commit and push report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add output/
+          git diff --cached --quiet || \
+            git commit -m "chore: update ${{ steps.mode.outputs.mode }} security news $(date -u +%Y-%m-%d)" \
+            && git push
