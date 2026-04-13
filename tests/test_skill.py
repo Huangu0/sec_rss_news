@@ -227,3 +227,364 @@ class TestFormatter:
         assert report.startswith("#")
         assert "---" in report
         assert "生成时间" in report
+
+
+# ---------------------------------------------------------------------------
+# scorer tests
+# ---------------------------------------------------------------------------
+
+class TestScorer:
+    def _article(self, title="CVE漏洞分析", hours_ago=1.0, source="TestSource"):
+        from datetime import timedelta
+        pub = datetime.now(tz=timezone.utc) - timedelta(hours=hours_ago)
+        return {
+            "title": title,
+            "link": "https://example.com/1",
+            "summary": "",
+            "published": pub,
+            "source": source,
+            "category": "安全资讯",
+        }
+
+    def test_newer_article_scores_higher(self):
+        from scorer import score_article
+
+        now = datetime.now(tz=timezone.utc)
+        new = self._article(hours_ago=1)
+        old = self._article(hours_ago=20)
+        assert score_article(new, now=now) > score_article(old, now=now)
+
+    def test_keyword_boost_doubles_score(self):
+        from scorer import score_article
+
+        now = datetime.now(tz=timezone.utc)
+        base = self._article(title="普通文章")
+        boosted = self._article(title="CVE漏洞高危预警")
+        # Both same age; boosted should be ~2× score
+        s_base = score_article(base, now=now, keyword_boosts=["CVE"])
+        s_boost = score_article(boosted, now=now, keyword_boosts=["CVE"])
+        assert abs(s_boost - s_base * 2) < 1e-9
+
+    def test_source_weight_scales_score(self):
+        from scorer import score_article
+
+        now = datetime.now(tz=timezone.utc)
+        art = self._article(source="WeightedSource")
+        s1 = score_article(art, now=now, source_weights={"WeightedSource": 1.0})
+        s2 = score_article(art, now=now, source_weights={"WeightedSource": 3.0})
+        assert abs(s2 - s1 * 3) < 1e-9
+
+    def test_no_date_gives_moderate_score(self):
+        from scorer import score_article
+
+        art = self._article()
+        art["published"] = None
+        score = score_article(art)
+        assert 0 < score <= 2.0  # moderate, not zero
+
+    def test_score_and_rank_hotspots_sorted(self):
+        from scorer import score_and_rank_hotspots
+        from datetime import timedelta
+
+        now = datetime.now(tz=timezone.utc)
+        hotspots = [
+            {
+                "keyword": "旧话题",
+                "count": 2,
+                "articles": [self._article(hours_ago=22), self._article(hours_ago=23)],
+            },
+            {
+                "keyword": "新话题",
+                "count": 2,
+                "articles": [self._article(hours_ago=1), self._article(hours_ago=2)],
+            },
+        ]
+        ranked = score_and_rank_hotspots(hotspots, now=now)
+        assert ranked[0]["keyword"] == "新话题"
+        assert ranked[0]["score"] > ranked[1]["score"]
+
+    def test_score_and_rank_adds_score_field(self):
+        from scorer import score_and_rank_hotspots
+
+        hotspots = [{"keyword": "kw", "count": 1, "articles": [self._article()]}]
+        result = score_and_rank_hotspots(hotspots)
+        assert "score" in result[0]
+        assert isinstance(result[0]["score"], float)
+
+
+# ---------------------------------------------------------------------------
+# persistence tests
+# ---------------------------------------------------------------------------
+
+class TestPersistence:
+    def test_filter_new_removes_seen(self, tmp_path):
+        from persistence import ArticlePersistence
+
+        store = ArticlePersistence(db_path=str(tmp_path / "test.db"))
+        articles = [
+            {"title": "文章A", "link": "https://example.com/a"},
+            {"title": "文章B", "link": "https://example.com/b"},
+        ]
+        store.mark_seen(articles[:1])  # mark only article A
+
+        new_only = store.filter_new(articles)
+        assert len(new_only) == 1
+        assert new_only[0]["title"] == "文章B"
+
+    def test_mark_seen_idempotent(self, tmp_path):
+        from persistence import ArticlePersistence
+
+        store = ArticlePersistence(db_path=str(tmp_path / "test.db"))
+        articles = [{"title": "文章A", "link": "https://example.com/a"}]
+        store.mark_seen(articles)
+        store.mark_seen(articles)  # second call should not raise
+        assert store.count() == 1
+
+    def test_count_returns_correct_number(self, tmp_path):
+        from persistence import ArticlePersistence
+
+        store = ArticlePersistence(db_path=str(tmp_path / "test.db"))
+        assert store.count() == 0
+        store.mark_seen([
+            {"title": "文章A"},
+            {"title": "文章B"},
+            {"title": "文章C"},
+        ])
+        assert store.count() == 3
+
+    def test_filter_new_empty_store(self, tmp_path):
+        from persistence import ArticlePersistence
+
+        store = ArticlePersistence(db_path=str(tmp_path / "test.db"))
+        articles = [{"title": "新文章1"}, {"title": "新文章2"}]
+        result = store.filter_new(articles)
+        assert result == articles
+
+    def test_purge_old_entries(self, tmp_path):
+        """Articles marked more than retention_days ago should be purged."""
+        import sqlite3
+        from datetime import timedelta
+        from persistence import ArticlePersistence, _fingerprint
+
+        store = ArticlePersistence(db_path=str(tmp_path / "test.db"), retention_days=1)
+        # Manually insert an old entry
+        old_date = (datetime.now(tz=timezone.utc) - timedelta(days=2)).isoformat()
+        with sqlite3.connect(store.db_path) as conn:
+            conn.execute(
+                "INSERT INTO seen_articles VALUES (?, ?, ?, ?)",
+                (_fingerprint("old article"), "old article", old_date, old_date),
+            )
+            conn.commit()
+        assert store.count() == 1
+
+        # Calling mark_seen triggers purge
+        store.mark_seen([{"title": "new article"}])
+        # Old entry should be gone
+        fps = store.get_seen_fingerprints()
+        assert _fingerprint("old article") not in fps
+
+
+# ---------------------------------------------------------------------------
+# config_loader tests
+# ---------------------------------------------------------------------------
+
+class TestConfigLoader:
+    def test_load_default_config_has_feeds_key(self):
+        from config_loader import load_config
+
+        cfg = load_config(None)
+        assert "feeds" in cfg
+        assert "schedule" in cfg
+
+    def test_deep_merge(self):
+        from config_loader import _deep_merge
+
+        base = {"a": {"x": 1, "y": 2}, "b": 3}
+        override = {"a": {"y": 99, "z": 100}, "c": 4}
+        result = _deep_merge(base, override)
+        assert result["a"]["x"] == 1       # preserved from base
+        assert result["a"]["y"] == 99      # overridden
+        assert result["a"]["z"] == 100     # new key from override
+        assert result["b"] == 3            # preserved from base
+        assert result["c"] == 4            # new from override
+
+    def test_load_json_config(self, tmp_path):
+        import json
+        from config_loader import load_config
+
+        cfg_file = tmp_path / "my.json"
+        cfg_file.write_text(json.dumps({"fetch": {"timeout_seconds": 99}}))
+        cfg = load_config(str(cfg_file))
+        assert cfg["fetch"]["timeout_seconds"] == 99
+
+    def test_load_yaml_config(self, tmp_path):
+        from config_loader import load_config
+
+        cfg_file = tmp_path / "my.yaml"
+        cfg_file.write_text("fetch:\n  timeout_seconds: 77\n")
+        cfg = load_config(str(cfg_file))
+        assert cfg["fetch"]["timeout_seconds"] == 77
+
+    def test_missing_config_returns_defaults(self):
+        from config_loader import load_config
+
+        cfg = load_config("/nonexistent/path/config.yaml")
+        assert isinstance(cfg, dict)
+
+    def test_default_config_opml_url_present(self):
+        from config_loader import load_config
+
+        cfg = load_config(None)
+        assert cfg.get("feeds", {}).get("opml_url", "")
+
+
+# ---------------------------------------------------------------------------
+# rss_fetcher auth tests
+# ---------------------------------------------------------------------------
+
+class TestRssFetcherAuth:
+    def test_no_auth_returns_default_headers(self):
+        from rss_fetcher import _build_request_kwargs
+
+        kwargs = _build_request_kwargs({"url": "https://example.com/rss"})
+        assert "User-Agent" in kwargs["headers"]
+        assert "auth" not in kwargs
+
+    def test_basic_auth_sets_auth_tuple(self):
+        from rss_fetcher import _build_request_kwargs
+
+        feed = {
+            "url": "https://example.com/rss",
+            "auth": {"type": "basic", "username": "alice", "password": "secret"},
+        }
+        kwargs = _build_request_kwargs(feed)
+        assert kwargs["auth"] == ("alice", "secret")
+
+    def test_api_key_auth_sets_header(self):
+        from rss_fetcher import _build_request_kwargs
+
+        feed = {
+            "url": "https://example.com/rss",
+            "auth": {"type": "api_key", "header": "X-API-Key", "key": "mykey123"},
+        }
+        kwargs = _build_request_kwargs(feed)
+        assert kwargs["headers"]["X-API-Key"] == "mykey123"
+
+    def test_api_key_default_header_name(self):
+        from rss_fetcher import _build_request_kwargs
+
+        feed = {
+            "url": "https://example.com/rss",
+            "auth": {"type": "api_key", "key": "tok"},
+        }
+        kwargs = _build_request_kwargs(feed)
+        assert kwargs["headers"]["Authorization"] == "tok"
+
+
+# ---------------------------------------------------------------------------
+# skill_runner tests
+# ---------------------------------------------------------------------------
+
+class TestSkillRunner:
+    """Smoke tests for skill_runner.run_skill using mocked network calls."""
+
+    def _make_article(self, title: str, hours_ago: float = 1.0):
+        from datetime import timedelta
+        return {
+            "title": title,
+            "link": f"https://example.com/{title}",
+            "summary": "",
+            "published": datetime.now(tz=timezone.utc) - timedelta(hours=hours_ago),
+            "source": "TestSource",
+            "category": "安全资讯",
+        }
+
+    def test_run_skill_returns_expected_keys(self, monkeypatch):
+        from skill_runner import run_skill
+
+        monkeypatch.setattr(
+            "skill_runner.fetch_feeds_from_opml",
+            lambda *a, **kw: [{"title": "T", "url": "u", "category": "c"}],
+        )
+        monkeypatch.setattr(
+            "skill_runner.fetch_all_articles",
+            lambda *a, **kw: [self._make_article(f"CVE-2024-{i:04d}漏洞预警") for i in range(6)],
+        )
+
+        result = run_skill({"mode": "daily", "output_format": "json"})
+        assert "hotspots" in result
+        assert "articles" in result
+        assert "metadata" in result
+        assert "report" in result
+
+    def test_run_skill_metadata_counts(self, monkeypatch):
+        from skill_runner import run_skill
+
+        articles = [self._make_article(f"文章{i}") for i in range(5)]
+        monkeypatch.setattr(
+            "skill_runner.fetch_feeds_from_opml",
+            lambda *a, **kw: [{"title": "T", "url": "u", "category": "c"}],
+        )
+        monkeypatch.setattr(
+            "skill_runner.fetch_all_articles",
+            lambda *a, **kw: articles,
+        )
+
+        result = run_skill({"mode": "daily"})
+        assert result["metadata"]["total_articles"] == 5
+        assert result["metadata"]["unique_articles"] <= 5
+
+    def test_run_skill_markdown_output(self, monkeypatch):
+        from skill_runner import run_skill
+
+        monkeypatch.setattr(
+            "skill_runner.fetch_feeds_from_opml",
+            lambda *a, **kw: [{"title": "T", "url": "u", "category": "c"}],
+        )
+        monkeypatch.setattr(
+            "skill_runner.fetch_all_articles",
+            lambda *a, **kw: [self._make_article(f"CVE-2024-{i}") for i in range(4)],
+        )
+
+        result = run_skill({"mode": "daily", "output_format": "markdown"})
+        assert result["report"].startswith("#")
+
+    def test_run_skill_empty_feeds_uses_fallback(self, monkeypatch):
+        from skill_runner import run_skill
+        import skill_runner as sr
+
+        calls = []
+
+        def fake_fetch(url=None, *a, **kw):
+            calls.append(url)
+            return [{"title": "T", "url": "u", "category": "c"}]
+
+        monkeypatch.setattr("skill_runner.fetch_feeds_from_opml", fake_fetch)
+        monkeypatch.setattr(
+            "skill_runner.fetch_all_articles",
+            lambda *a, **kw: [],
+        )
+        # Force config to have no opml_url so fallback is triggered
+        monkeypatch.setattr("skill_runner.load_config", lambda *a, **kw: {"feeds": {}})
+
+        run_skill({"mode": "daily"})
+        # Should have called fetch_feeds_from_opml (fallback)
+        assert len(calls) >= 1
+
+    def test_hotspots_have_score_field(self, monkeypatch):
+        from skill_runner import run_skill
+
+        monkeypatch.setattr(
+            "skill_runner.fetch_feeds_from_opml",
+            lambda *a, **kw: [{"title": "T", "url": "u", "category": "c"}],
+        )
+        # Enough articles so hotspots can form
+        monkeypatch.setattr(
+            "skill_runner.fetch_all_articles",
+            lambda *a, **kw: [self._make_article(f"CVE漏洞预警{i}") for i in range(5)],
+        )
+
+        result = run_skill({"mode": "daily"})
+        for h in result["hotspots"]:
+            assert "score" in h
+            assert isinstance(h["score"], float)

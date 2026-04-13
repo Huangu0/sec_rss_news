@@ -1,0 +1,99 @@
+# sec_rss_news 默认配置
+# 所有字段均可通过 --config 指定的自定义 YAML/JSON 文件覆盖
+
+# ──────────────────────────────────────────────────────────────────────────────
+# RSS 订阅源
+# ──────────────────────────────────────────────────────────────────────────────
+feeds:
+  # 优先从 OPML URL 加载订阅源列表
+  opml_url: "https://raw.githubusercontent.com/arch3rPro/SecurityRSS/main/SecurityRSS-Lite.opml"
+
+  # 静态 RSS 源列表（与 OPML 合并使用）
+  # 每条支持可选的 auth 字段（basic 或 api_key）和 weight（来源权重，默认 1.0）
+  sources: []
+  # 示例：
+  # sources:
+  #   - title: FreeBuf
+  #     url: https://www.freebuf.com/feed
+  #     category: 安全资讯
+  #     weight: 1.5
+  #   - title: 内部安全情报
+  #     url: https://internal.example.com/rss
+  #     category: 内部情报
+  #     weight: 2.0
+  #     auth:
+  #       type: basic          # basic | api_key
+  #       username: alice
+  #       password: secret
+  #   - title: 威胁情报平台
+  #     url: https://threat.example.com/feed
+  #     category: 威胁情报
+  #     auth:
+  #       type: api_key
+  #       header: X-API-Key    # 请求头名称
+  #       key: your-api-key
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 调度 / 运行模式
+# ──────────────────────────────────────────────────────────────────────────────
+schedule:
+  frequency: daily   # 默认模式：daily | weekly
+  modes:
+    daily:
+      window_hours: 24
+      max_hotspots: 10
+      description: 每日资讯简报（近 24 小时）
+    weekly:
+      window_hours: 168
+      max_hotspots: 15
+      description: 每周资讯简报（近 7 天）
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 抓取参数
+# ──────────────────────────────────────────────────────────────────────────────
+fetch:
+  timeout_seconds: 15
+  max_workers: 10
+  max_items_per_source: 20
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 去重策略
+# ──────────────────────────────────────────────────────────────────────────────
+dedup:
+  title_similarity_threshold: 0.8   # SequenceMatcher ratio 阈值，0~1
+  use_fingerprint: false             # true 时基于 SHA-256 指纹精确匹配（速度更快）
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 热度打分规则
+# ──────────────────────────────────────────────────────────────────────────────
+scoring:
+  time_decay_hours: 24          # 时间衰减半衰期（小时）；越小衰减越快
+  source_weight_enabled: true   # 是否启用来源权重
+  keyword_boost:                # 标题包含以下关键词时，热度分翻倍
+    - CVE
+    - 漏洞
+    - 勒索
+    - 攻击
+    - 0day
+    - RCE
+    - 供应链
+    - APT
+    - 数据泄露
+  top_keywords: 20              # 热点分析最多提取的关键词数
+  min_articles_per_hotspot: 2   # 成为热点所需的最少关联文章数
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 持久化（跨周期去重）
+# ──────────────────────────────────────────────────────────────────────────────
+persistence:
+  enabled: false              # 是否启用跨周期持久去重
+  type: sqlite                # 目前仅支持 sqlite
+  path: data/seen_articles.db # SQLite 数据库路径
+  retention_days: 30          # 指纹保留天数，过期自动清理
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 输出配置
+# ──────────────────────────────────────────────────────────────────────────────
+output:
+  format: markdown   # 默认输出格式：markdown | json
+  dir: output        # Markdown 报告保存目录
