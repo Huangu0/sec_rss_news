@@ -124,10 +124,11 @@ def run(
         store.mark_seen(unique_articles)
 
     # Step 4: hotspot analysis
-    hotspots, _ = analyze_hotspots(
+    hotspots, _, keyword_counts = analyze_hotspots(
         unique_articles,
         top_n=scoring_cfg.get("top_keywords", 20),
         min_articles=scoring_cfg.get("min_articles_per_hotspot", 2),
+        return_keyword_counts=True,
     )
 
     # Step 4b: score and rank hotspots
@@ -142,11 +143,35 @@ def run(
         source_weights=source_weights if scoring_cfg.get("source_weight_enabled", True) else {},
         keyword_boosts=scoring_cfg.get("keyword_boost") or None,
     )
-    max_hotspots = mode_cfg.get("max_hotspots", 10)
+    max_hotspots = min(mode_cfg.get("max_hotspots", 10), 10)
     hotspots = hotspots[:max_hotspots]
 
+    summary_top_keywords = [
+        {"keyword": kw, "count": count}
+        for kw, count in keyword_counts.most_common(min(10, scoring_cfg.get("top_keywords", 20)))
+    ]
+    summary_attention = []
+    for h in hotspots[:3]:
+        articles_for_hotspot = h.get("articles") or []
+        primary = articles_for_hotspot[0] if articles_for_hotspot else {}
+        summary_attention.append(
+            {
+                "keyword": h.get("keyword", ""),
+                "count": h.get("count", 0),
+                "headline": primary.get("title", ""),
+                "link": primary.get("link", ""),
+                "source": primary.get("source", ""),
+            }
+        )
+    summary = {
+        "top_keywords": summary_top_keywords,
+        "attention": summary_attention,
+    }
+
     # Step 5: format Markdown report
-    report = format_report(hotspots, unique_articles, mode=mode, report_date=report_date)
+    report = format_report(
+        hotspots, unique_articles, summary=summary, mode=mode, report_date=report_date
+    )
 
     # Step 6: save to file
     out_path = build_output_path(output_dir, mode, report_date)

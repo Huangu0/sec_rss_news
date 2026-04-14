@@ -167,6 +167,18 @@ class TestSummarizer:
         _, returned = analyze_hotspots(orig)
         assert returned is orig
 
+    def test_keyword_summary_counts(self):
+        from summarizer import keyword_summary
+
+        articles = self._build_articles([
+            "CVE漏洞分析",
+            "CVE漏洞通告",
+            "安全公告",
+        ])
+        summary = keyword_summary(articles, top_n=5)
+        keywords = {item["keyword"] for item in summary}
+        assert any("CVE" in kw for kw in keywords)
+
 
 # ---------------------------------------------------------------------------
 # formatter tests
@@ -227,6 +239,27 @@ class TestFormatter:
         assert report.startswith("#")
         assert "---" in report
         assert "生成时间" in report
+
+    def test_summary_section_present(self):
+        from formatter import format_report
+
+        summary = {
+            "top_keywords": [{"keyword": "CVE", "count": 3}],
+            "attention": [
+                {
+                    "keyword": "CVE",
+                    "count": 3,
+                    "headline": "CVE-2026-0001 漏洞预警",
+                    "link": "https://example.com/cve",
+                    "source": "TestSource",
+                }
+            ],
+        }
+        report = format_report([], [self._sample_article("占位")], summary=summary, mode="daily")
+        assert "高频关键词" in report
+        assert "需要注意" in report
+        assert "CVE-2026-0001" in report
+        assert "https://example.com/cve" in report
 
 
 # ---------------------------------------------------------------------------
@@ -516,6 +549,7 @@ class TestSkillRunner:
         assert "articles" in result
         assert "metadata" in result
         assert "report" in result
+        assert "summary" in result
 
     def test_run_skill_metadata_counts(self, monkeypatch):
         from skill_runner import run_skill
@@ -588,3 +622,25 @@ class TestSkillRunner:
         for h in result["hotspots"]:
             assert "score" in h
             assert isinstance(h["score"], float)
+
+    def test_hotspots_capped_and_summary_present(self, monkeypatch):
+        from skill_runner import run_skill
+
+        def _build_articles():
+            arts = []
+            for i in range(12):
+                arts.append(self._make_article(f"Topic{i} alert A"))
+                arts.append(self._make_article(f"Topic{i} alert B"))
+            return arts
+
+        monkeypatch.setattr(
+            "skill_runner.fetch_feeds_from_opml",
+            lambda *a, **kw: [{"title": "T", "url": "u", "category": "c"}],
+        )
+        monkeypatch.setattr("skill_runner.deduplicate_articles", lambda arts, **kw: arts)
+        monkeypatch.setattr("skill_runner.fetch_all_articles", lambda *a, **kw: _build_articles())
+
+        result = run_skill({"mode": "daily", "max_hotspots": 20})
+        assert len(result["hotspots"]) <= 10
+        assert "summary" in result
+        assert result["summary"]["top_keywords"]

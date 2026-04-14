@@ -66,37 +66,48 @@ def _extract_keywords(title: str) -> List[str]:
     return keywords
 
 
+def _index_keywords(articles: List[Dict]) -> Tuple[Dict[str, List[Dict]], Counter]:
+    """Build keyword → articles mapping and frequency counter."""
+    keyword_to_articles: Dict[str, List[Dict]] = defaultdict(list)
+    keyword_counts: Counter = Counter()
+
+    for article in articles:
+        seen_keywords: set = set()
+        for kw in _extract_keywords(article.get("title", "")):
+            kw_lower = kw.lower()
+            if kw_lower in seen_keywords:
+                continue
+            keyword_to_articles[kw].append(article)
+            keyword_counts[kw] += 1
+            seen_keywords.add(kw_lower)
+
+    return keyword_to_articles, keyword_counts
+
+
 def analyze_hotspots(
     articles: List[Dict],
     top_n: int = _TOP_KEYWORDS,
     min_articles: int = _MIN_ARTICLES_PER_HOTSPOT,
-) -> Tuple[List[Dict], List[Dict]]:
+    return_keyword_counts: bool = False,
+) -> Tuple[List[Dict], List[Dict]] | Tuple[List[Dict], List[Dict], Counter]:
     """Analyze articles and return hotspot topics.
 
     Args:
         articles: Deduplicated article list.
         top_n: Maximum number of hot keywords to surface.
         min_articles: Minimum articles required for a keyword to be a hotspot.
+        return_keyword_counts: When True, also return the keyword frequency Counter.
 
     Returns:
-        A tuple of (hotspots, articles):
+        Tuple containing hotspots and the original articles; when
+        ``return_keyword_counts`` is True, a third element (Counter) is returned.
           - hotspots: list of dicts with keys 'keyword', 'count', 'articles'
             sorted by count descending.
           - articles: original articles list (unchanged).
+          - keyword_counts (optional): Counter of keyword → occurrence count.
     """
-    # Build keyword → article index
-    keyword_to_articles: Dict[str, List[Dict]] = defaultdict(list)
+    keyword_to_articles, keyword_counts = _index_keywords(articles)
 
-    for article in articles:
-        seen_keywords: set = set()
-        for kw in _extract_keywords(article.get("title", "")):
-            kw_lower = kw.lower()
-            if kw_lower not in seen_keywords:
-                keyword_to_articles[kw].append(article)
-                seen_keywords.add(kw_lower)
-
-    # Rank keywords by frequency
-    keyword_counts = Counter({kw: len(arts) for kw, arts in keyword_to_articles.items()})
     top_keywords = [kw for kw, _ in keyword_counts.most_common(top_n * 3)]
 
     # Build hotspot list, deduplicating articles across hotspots
@@ -129,4 +140,15 @@ def analyze_hotspots(
         )
 
     print(f"[SUMMARIZER] 识别出 {len(hotspots)} 个热点话题")
+    if return_keyword_counts:
+        return hotspots, articles, keyword_counts
     return hotspots, articles
+
+
+def keyword_summary(articles: List[Dict], top_n: int = 10) -> List[Dict[str, int]]:
+    """Return the top keyword frequencies from *articles*."""
+    _, keyword_counts = _index_keywords(articles)
+    return [
+        {"keyword": kw, "count": count}
+        for kw, count in keyword_counts.most_common(top_n)
+    ]

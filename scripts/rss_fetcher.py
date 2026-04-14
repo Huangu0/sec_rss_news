@@ -95,8 +95,15 @@ def _fetch_single_feed(
         resp = requests.get(url, timeout=timeout, **request_kwargs)
         resp.raise_for_status()
         parsed = feedparser.parse(resp.content)
+        if getattr(parsed, "bozo", False):
+            # Malformed feeds slow things down; skip them directly.
+            print(f"[RSS] ✗ {source_title} — 解析异常，跳过 ({parsed.bozo_exception})")
+            return articles
+    except requests.exceptions.RequestException as exc:
+        print(f"[RSS] ✗ {source_title} — 访问异常，已跳过 ({exc.__class__.__name__})")
+        return articles
     except Exception as exc:
-        print(f"[RSS] ✗ {source_title} — {exc}")
+        print(f"[RSS] ✗ {source_title} — 解析失败，已跳过 ({exc})")
         return articles
 
     now = datetime.now(tz=timezone.utc)
@@ -116,6 +123,17 @@ def _fetch_single_feed(
             continue
 
         link = getattr(entry, "link", "") or ""
+        if not link:
+            links = getattr(entry, "links", []) or []
+            for l in links:
+                href = ""
+                if isinstance(l, dict):
+                    href = l.get("href", "")
+                else:
+                    href = getattr(l, "href", "")
+                if href:
+                    link = href
+                    break
         title = getattr(entry, "title", "").strip()
         summary = getattr(entry, "summary", "") or getattr(entry, "description", "") or ""
 
