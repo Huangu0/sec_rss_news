@@ -59,14 +59,16 @@ def _fmt_article_line(article: Dict) -> str:
 def format_report(
     hotspots: List[Dict],
     articles: List[Dict],
+    summary: Dict | None = None,
     mode: str = "daily",
     report_date: datetime | None = None,
 ) -> str:
     """Build the full Markdown report string.
 
     Args:
-        hotspots: Output from summarizer.analyze_hotspots.
+        hotspots: Output from summarizer.analyze_hotspots / scorer.
         articles: Deduplicated article list.
+        summary: Dict with keys top_keywords (list) and attention (list).
         mode: 'daily' or 'weekly'.
         report_date: Report reference date (defaults to UTC now).
 
@@ -81,6 +83,9 @@ def format_report(
     now_str = report_date.strftime("%Y-%m-%d %H:%M UTC")
 
     lines: List[str] = []
+    summary = summary or {}
+    summary_keywords = summary.get("top_keywords") or []
+    summary_attention = summary.get("attention") or []
 
     # ── Header ───────────────────────────────────────────────────────────────
     lines.append(f"# {meta['title_prefix']} · {date_str}")
@@ -91,9 +96,11 @@ def format_report(
     lines.append(
         f"> 统计范围：{meta['window_label']}  "
     )
+    stats_line = f"> 共收录 **{len(articles)}** 条资讯"
+    stats_line += f"，发现 **{len(hotspots)}** 个热点话题" if hotspots else ""
+    lines.append(stats_line)
     lines.append(
-        f"> 共收录 **{len(articles)}** 条资讯"
-        + (f"，发现 **{len(hotspots)}** 个热点话题" if hotspots else "")
+        f"> 热点条数已限制在 10 条以内"
     )
     lines.append("")
     lines.append("---")
@@ -101,7 +108,7 @@ def format_report(
 
     # ── Hotspot Summary ───────────────────────────────────────────────────────
     if hotspots:
-        lines.append("## 📊 热点话题")
+        lines.append("## 🔥 热点信息")
         lines.append("")
         for i, hotspot in enumerate(hotspots):
             emoji = _HOTSPOT_EMOJIS[i % len(_HOTSPOT_EMOJIS)]
@@ -116,8 +123,44 @@ def format_report(
         lines.append("---")
         lines.append("")
 
+    # ── Summary Section ───────────────────────────────────────────────────────
+    lines.append("## 🧭 总结信息")
+    lines.append("")
+    if summary_keywords:
+        kw_parts = [f"{item.get('keyword', '')}（{item.get('count', 0)}）" for item in summary_keywords[:10]]
+        lines.append("- **高频关键词**：" + " · ".join(kw_parts))
+    else:
+        lines.append("- **高频关键词**：暂无数据")
+
+    if summary_attention:
+        lines.append("- **需要注意**：")
+        for item in summary_attention:
+            keyword = item.get("keyword", "")
+            count = item.get("count", 0)
+            headline = item.get("headline", "")
+            link = item.get("link", "")
+            source = item.get("source", "")
+
+            meta = f"{keyword}（{count}条）" if keyword else ""
+            if headline:
+                if link:
+                    detail = f"[{headline}]({link})"
+                else:
+                    detail = headline
+                if source:
+                    detail += f" — `{source}`"
+            else:
+                detail = source or ""
+            joined = " — ".join([p for p in [meta, detail] if p])
+            lines.append(f"- {joined}" if joined else "- （暂无详情）")
+    else:
+        lines.append("- **需要注意**：暂无需要特别关注的内容")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+
     # ── Full Article List ─────────────────────────────────────────────────────
-    lines.append("## 📰 全部资讯")
+    lines.append("## 📰 全部资讯（附录）")
     lines.append("")
 
     # Group by category

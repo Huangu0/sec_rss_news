@@ -75,6 +75,25 @@ def _serialise_hotspots(hotspots: List[Dict]) -> List[Dict]:
     ]
 
 
+def _serialise_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "top_keywords": [
+            {"keyword": kw.get("keyword", ""), "count": int(kw.get("count", 0))}
+            for kw in summary.get("top_keywords", [])
+        ],
+        "attention": [
+            {
+                "keyword": item.get("keyword", ""),
+                "count": int(item.get("count", 0)),
+                "headline": item.get("headline", ""),
+                "link": item.get("link", ""),
+                "source": item.get("source", ""),
+            }
+            for item in summary.get("attention", [])
+        ],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -158,10 +177,11 @@ def run_skill(input: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         unique_articles = persistence.filter_new(unique_articles)
 
     # ── Step 5 : Hotspot analysis ─────────────────────────────────────────────
-    hotspots, _ = analyze_hotspots(
+    hotspots, _, keyword_counts = analyze_hotspots(
         unique_articles,
         top_n=scoring_cfg.get("top_keywords", 20),
         min_articles=scoring_cfg.get("min_articles_per_hotspot", 2),
+        return_keyword_counts=True,
     )
 
     # ── Step 6 : Score and rank hotspots ──────────────────────────────────────
@@ -176,7 +196,32 @@ def run_skill(input: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         source_weights=source_weights if scoring_cfg.get("source_weight_enabled", True) else {},
         keyword_boosts=scoring_cfg.get("keyword_boost") or None,
     )
+    max_hotspots = min(max_hotspots, 10)
     hotspots = hotspots[:max_hotspots]
+
+    # ── Step 6b : Summary info ────────────────────────────────────────────────
+    top_keyword_limit = min(10, scoring_cfg.get("top_keywords", 20))
+    summary_top_keywords = [
+        {"keyword": kw, "count": count}
+        for kw, count in keyword_counts.most_common(top_keyword_limit)
+    ]
+    summary_attention = []
+    for h in hotspots[:3]:
+        articles_for_hotspot = h.get("articles") or []
+        primary = articles_for_hotspot[0] if articles_for_hotspot else {}
+        summary_attention.append(
+            {
+                "keyword": h.get("keyword", ""),
+                "count": h.get("count", 0),
+                "headline": primary.get("title", ""),
+                "link": primary.get("link", ""),
+                "source": primary.get("source", ""),
+            }
+        )
+    summary: Dict[str, Any] = {
+        "top_keywords": summary_top_keywords,
+        "attention": summary_attention,
+    }
 
     # ── Step 7 : Mark seen ────────────────────────────────────────────────────
     if persistence is not None:
@@ -195,12 +240,13 @@ def run_skill(input: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         "hotspots": _serialise_hotspots(hotspots),
         "articles": _serialise_articles(unique_articles),
         "report": "",
+        "summary": _serialise_summary(summary),
         "metadata": metadata,
     }
 
     if output_format == "markdown":
         result["report"] = format_report(
-            hotspots, unique_articles, mode=mode, report_date=now
+            hotspots, unique_articles, summary=summary, mode=mode, report_date=now
         )
 
     return result

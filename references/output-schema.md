@@ -10,6 +10,7 @@ Detailed documentation for the JSON output of `run_skill()`.
 |--------------|---------|-------------|
 | `hotspots`   | array   | Ranked hotspot topics (descending by `score`) |
 | `articles`   | array   | Full deduplicated article list |
+| `summary`    | object  | Digest of high-frequency keywords and watchlist items |
 | `report`     | string  | Markdown briefing (`""` when `output_format = "json"`) |
 | `metadata`   | object  | Run statistics |
 
@@ -25,6 +26,7 @@ Each element represents one keyword-based hotspot cluster.
 | `score`    | float   | Aggregate hotness score (sum of constituent article scores) |
 | `count`    | integer | Number of articles in this hotspot |
 | `articles` | array   | Up to 10 representative articles (see `articles[]` schema below) |
+> Returned hotspot count is always capped at 10 even if a higher value is requested.
 
 ---
 
@@ -38,6 +40,17 @@ Each element represents one keyword-based hotspot cluster.
 | `published` | string \| null  | ISO 8601 datetime string, or `null` if unknown |
 | `source`    | string          | RSS feed display name |
 | `category`  | string          | Feed category |
+
+---
+
+## `summary`
+
+Brief digest accompanying the hotspots.
+
+| Field            | Type    | Description |
+|------------------|---------|-------------|
+| `top_keywords`   | array   | Ordered list of `{keyword, count}` pairs representing the most frequent keywords in the window |
+| `attention`      | array   | Items that need attention, each with `{keyword, count, headline, link, source}`; derived from the top hotspots |
 
 ---
 

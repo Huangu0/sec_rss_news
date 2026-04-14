@@ -71,6 +71,21 @@ across scheduling cycles.
       ]
     }
   ],
+  "summary": {
+    "top_keywords": [
+      {"keyword": "CVE", "count": 5},
+      {"keyword": "RCE", "count": 3}
+    ],
+    "attention": [
+      {
+        "keyword": "CVE漏洞",
+        "count": 3,
+        "headline": "CVE-2024-XXXX 高危漏洞预警",
+        "link": "https://example.com/article",
+        "source": "FreeBuf"
+      }
+    ]
+  },
   "articles": [ /* full deduplicated article list */ ],
   "report": "# 🔐 安全资讯日报 ...",
   "metadata": {
@@ -84,6 +99,8 @@ across scheduling cycles.
 ```
 
 The `report` field contains a Markdown briefing (only when `output_format = "markdown"`).
+Hotspot count is capped at 10 even when a higher value is requested; the summary includes
+high-frequency keywords and top watchlist items derived from the hottest topics.
 
 ---
 
