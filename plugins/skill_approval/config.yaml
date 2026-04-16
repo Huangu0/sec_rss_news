@@ -1,0 +1,39 @@
+# Skill Approval Plugin Configuration
+# 技能创建审批插件配置文件
+
+# Interactive Mode - Whether to prompt user for approval
+# 交互模式 - 是否提示用户进行审批
+interactive_mode: true
+
+# Default Approval - Default decision when not in interactive mode
+# 默认审批 - 非交互模式下的默认决策
+default_approval: false
+
+# Whitelist - Skills that are automatically approved
+# 白名单 - 自动批准的技能列表
+whitelist:
+  - sec-rss-news
+  - calculator
+  - time-utils
+
+# Trusted Sources - URLs that are automatically trusted
+# 可信源 - 自动信任的 URL 列表
+trusted_sources:
+  - https://agentskills.io/
+  - https://github.com/NousResearch/
+
+# Log Approvals - Whether to log all approval requests
+# 记录审批 - 是否记录所有审批请求
+log_approvals: true
+
+# Approval Log Path - Path to save approval logs
+# 审批日志路径 - 保存审批日志的路径
+approval_log_path: data/approval_log.json
+
+# Approval Timeout - Timeout for approval prompts (seconds)
+# 审批超时 - 审批提示的超时时间（秒）
+approval_timeout: 300
+
+# Require Update Approval - Whether to require approval for skill updates
+# 要求更新审批 - 是否对技能更新也要求审批
+require_update_approval: false
